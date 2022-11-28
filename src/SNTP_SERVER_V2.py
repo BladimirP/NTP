@@ -1,20 +1,15 @@
 import threading
-import datetime
-import struct
-import select
 import socket
 import queue
 import math
 import time
+import sys
 
 # Variables Globales
 taskQueue = queue.Queue()
 stopFlag = False
 
 class PAQUETE_SNTP:
-    
-    _PACKET_FORMAT = "!B B B b 11I"
-    """packet format to pack/unpack"""
 
     def __init__(self):
         """Constructor.
@@ -31,11 +26,11 @@ class PAQUETE_SNTP:
         self.precision = 0
         self.root_delay = 0
         self.root_dispersion = 0
-        self.ref_id = 0
-        self.ref_timestamp = 0
+        self.ref_id = ""
+        self.ref_timestamp = 0.0
         self.origin_timestamp = 0
         self.recv_timestamp = 0
-        self.transmit_timestamp = 0
+        self.transmit_timestamp = 0.0
 
     def to_data(self):
         """Convierte el paquete SNTP a un buffer que puede ser enviado por un socket.
@@ -70,6 +65,8 @@ class PAQUETE_SNTP:
         Raises:
             NTPException -- in case of invalid packet format
         """
+        print(data)
+        print(type(data))
         self.leap_indicator     = int(data[0, 1], 10)
         self.version_number     = int(data[2, 4], 10)
         self.mode               = int(data[5, 7], 10)
@@ -95,16 +92,12 @@ class Receptor(threading.Thread):
         # Me mantengo escuchando hasta que la Flag me lo indique.
         while (not stopFlag):
             # select espera a que el objeto este listo, es decir, que todos sus paquetes hayan llegado
-            rlist, wlist, elist = select.select([self.socket],[],[],0)
-            if len(rlist) != 0:
-                print("%d paquetes recibidos".format(rlist))
-                for tempSocket in rlist:
-                    try:
-                        data,addr = tempSocket.recvfrom(1024)
-                        recvTimestamp = time.time()
-                        taskQueue.put((data,addr,recvTimestamp))
-                    except socket.error:
-                        print("Error al recibir solicitud");        
+            try:
+                data,addr = self.socket.recvfrom(1024)
+                recvTimestamp = time.time()
+                taskQueue.put((data,addr,recvTimestamp))
+            except socket.error:
+                print("")       
 
 
 class Procesador(threading.Thread):
@@ -122,7 +115,6 @@ class Procesador(threading.Thread):
                 PAQUETE_ENTRADA.recv_timestamp = recvTimestamp
 
                 PAQUETE_SALIDA = PAQUETE_SNTP()
-                PAQUETE_SALIDA.asing_data()
                 PAQUETE_SALIDA.leap_indicator = 0
                 PAQUETE_SALIDA.version_number = PAQUETE_ENTRADA.version_number
                 if (PAQUETE_ENTRADA.mode == 3):
@@ -134,12 +126,14 @@ class Procesador(threading.Thread):
                 PAQUETE_SALIDA.precision = 0
                 PAQUETE_SALIDA.root_delay = 0
                 PAQUETE_SALIDA.root_dispersion = 0
-                PAQUETE_SALIDA.ref_id = 0
-                PAQUETE_SALIDA.ref_timestamp = PAQUETE_SALIDA.transmit_timestamp = time.time()
+                PAQUETE_SALIDA.ref_id = ""
+                aux = time.time()
+                PAQUETE_SALIDA.ref_timestamp = aux
+                PAQUETE_SALIDA.transmit_timestamp = aux
                 PAQUETE_SALIDA.origin_timestamp = PAQUETE_ENTRADA.origin_timestamp
                 PAQUETE_SALIDA.recv_timestamp = PAQUETE_ENTRADA.recv_timestamp
 
-                socket.sendto(str.encode(PAQUETE_SALIDA.to_data()),addr)
+                self.socket.sendto(str.encode(PAQUETE_SALIDA.to_data()),addr)
                 print("Enviado desde %s hacia %d".format(addr[0],addr[1]))
             except queue.Empty:
                 continue
@@ -174,17 +168,16 @@ class SNTP:
     }
 
 def main():
-    # SERVER
-    localIP     = "0.0.0.0"
-    localPort   = 8000
+    localIP     = "127.0.0.1"
+    localPort   = 5300
     UDPServerSocket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
     UDPServerSocket.bind((localIP, localPort))
     print("Link Available")
 
-    Prog1 = Receptor(socket)
+    Prog1 = Receptor(UDPServerSocket)
     Prog1.start()
 
-    Prog2 = Procesador(socket)
+    Prog2 = Procesador(UDPServerSocket)
     Prog2.start()
 
     while True:
@@ -193,10 +186,9 @@ def main():
         except KeyboardInterrupt:
             print ("Exiting...")
             stopFlag = True
-            Prog1.join()
-            Prog2.join()
-            socket.close()
+            UDPServerSocket.close()
             print ("Exited")
             break
+    return sys.exit()
 
 main()
