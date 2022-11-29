@@ -1,7 +1,4 @@
 #!/usr/bin/env python
-    # Python Network Programming Cookbook, Second Edition -- Chapter - 1
-    # This program is optimized for Python 2.7.12 and Python 3.5.2.
-    # It may run on any other version with/without modifications.
 import socket
 import struct
 import sys
@@ -9,11 +6,12 @@ import time
 
 NTP_SERVER = "127.0.0.1"
 TIME1970 = 2208988800
-
+print('hola')
 def sntp_client():
     client = socket.socket( socket.AF_INET, socket.SOCK_DGRAM )
     data = '\x1b' + 47 * '\0'
-    client.sendto( data.encode('utf-8'), ( NTP_SERVER, 5300 ))
+    client.sendto( data.encode('utf-8'), ( NTP_SERVER, 9001 ))
+    print('envie')
     data, address = client.recvfrom( 1024 )
     if data:
         print ('Response received from:', address)

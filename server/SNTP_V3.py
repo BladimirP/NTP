@@ -1,5 +1,8 @@
+#!/usr/bin/python
+
 import threading
 import socket
+import struct
 import queue
 import math
 import time
@@ -9,8 +12,13 @@ import sys
 taskQueue = queue.Queue()
 stopFlag = False
 
+def decimales(number, n = 32):
+    return int(abs(int(number)-number*2**n))
+
 class PAQUETE_SNTP:
 
+    PACKET_FORMAT = "!B B B b 11I"
+    
     def __init__(self):
         """Constructor.
         Parametros:
@@ -39,22 +47,27 @@ class PAQUETE_SNTP:
         Raises:
             SNTPException -- in case of invalid field
         """
-        data = ""
-        data += format(self.leap_indicator, '02b')
-        data += format(self.version_number, '03b')
-        data += format(self.mode, '03b')
-        data += format(self.stratum, '08b')
-        data += format(self.poll_interval, '08b')
-        data += format(self.precision, '08b')
-
-        data += format(math.floor(self.root_delay), '16b') + '0'*16 #+ format((self.root_delay%1)*10^16, '')
-        data += format(math.floor(self.root_dispersion), '16b') + '0'*16
-        # cuidado con ref_id al reves
-        data += ''.join(format(ord(i), '04b') for i in self.ref_id)
-        data += format(int(self.ref_timestamp), '32b') + '0'*32
-        data += format(int(self.origin_timestamp), '32b') + '0'*32
-        data += format(int(self.recv_timestamp), '32b') + '0'*32
-        data += format(int(self.transmit_timestamp), '32b') + '0'*32
+        try:
+            data = struct.pack(PAQUETE_SNTP.PACKET_FORMAT,
+            (self.leap_indicator << 6 | self.version_number << 3 | self.mode), # unsigned integer (02b,03b,03b)
+            self.stratum,       # unsigned integer 08b
+            self.poll_interval, # unsigned integer 08b
+            self.precision,     # signed integer 08b
+            int(self.root_delay) << 16 | decimales(self.root_delay),    #unsigned integer 32b
+            int(self.root_dispersion) << 16 | decimales(self.root_dispersion, 16), #unsigned integer 32b
+            self.ref_id, #32b
+            int(self.ref_timestamp), #32b
+            decimales(self.ref_timestamp, 32), #32b
+            int(self.origin_timestamp), #32b
+            decimales(self.origin_timestamp, 32), #32b
+            int(self.recv_timestamp), #32b
+            decimales(self.recv_timestamp), #32b
+            int(self.transmit_timestamp), #32b
+            decimales(self.transmit_timestamp, 32)) #32b
+        
+        except struct.error:
+            raise Exception("Campos del Paquete SNTP no es valido.")
+            
     
         return data
 
@@ -65,22 +78,25 @@ class PAQUETE_SNTP:
         Raises:
             NTPException -- in case of invalid packet format
         """
-        print(data)
-        print(type(data))
-        self.leap_indicator     = int(data[0, 1], 10)
-        self.version_number     = int(data[2, 4], 10)
-        self.mode               = int(data[5, 7], 10)
-        self.stratum            = int(data[8, 15], 10)
-        self.poll_interval      = int(data[16, 23], 10)
-        self.precision          = int(data[24, 31], 10)
-        self.root_delay         = int(data[32, 47], 10) # +0.data[47]
-        self.root_dispersion    = int(data[64, 79], 10) # +0.data[80]
-        self.ref_id             = chr(int(data[96, 99], 10)) + chr(int(data[100, 103], 10)) + chr(int(data[104, 107], 10)) + chr(int(data[108, 111], 10)) + chr(int(data[112, 115], 10)) + chr(int(data[116, 119], 10)) + chr(int(data[120, 123], 10)) + chr(int(data[124, 127], 10))
-        self.ref_timestamp      = int(data[128, 159], 10) #
-        self.origin_timestamp   = int(data[192, 223], 10)
-        self.recv_timestamp     = int(data[256, 287], 10)
-        self.transmit_timestamp = int(data[320, 351], 10)
-
+        try:
+            unpacked = struct.unpack(PAQUETE_SNTP.PACKET_FORMAT, data[0:struct.calcsize(PAQUETE_SNTP.PACKET_FORMAT)])
+        except:
+            raise Exception("El Paquete SNTP recibido no es valido.")    
+            
+        self.leap = unpacked[0] >> 6 & 0x3
+        self.version = unpacked[0] >> 3 & 0x7
+        self.mode = unpacked[0] & 0x7
+        self.stratum = unpacked[1]
+        self.poll_interval      = unpacked[2]
+        self.precision          = unpacked[3]
+        self.root_delay         = float(unpacked[4])/2**16
+        self.root_dispersion    = float(unpacked[5])/2**16
+        self.ref_id             = unpacked[6]
+        self.ref_timestamp      = _to_time(unpacked[7], unpacked[8])
+        self.origin_timestamp   = _to_time(unpacked[9], unpacked[10])
+        self.recv_timestamp     = _to_time(unpacked[11], unpacked[12])
+        self.transmit_timestamp = _to_time(unpacked[13], unpacked[14])
+   
 class Receptor(threading.Thread):
     def __init__(self, socket):
         threading.Thread.__init__(self)
@@ -91,7 +107,6 @@ class Receptor(threading.Thread):
         global taskQueue, stopFlag
         # Me mantengo escuchando hasta que la Flag me lo indique.
         while (not stopFlag):
-            # select espera a que el objeto este listo, es decir, que todos sus paquetes hayan llegado
             try:
                 data,addr = self.socket.recvfrom(1024)
                 recvTimestamp = time.time()
@@ -101,7 +116,7 @@ class Receptor(threading.Thread):
 
 
 class Procesador(threading.Thread):
-    def __init__(self,socket):
+    def __init__(self, socket):
         threading.Thread.__init__(self)
         self.socket = socket
 
@@ -138,41 +153,12 @@ class Procesador(threading.Thread):
             except queue.Empty:
                 continue
 
-
-
-# Clase que describe las tablas del RFC 1361
-class SNTP:
-    # 2 bits
-    LI_TABLE ={
-        0: "no warning",
-        1: "last minute has 61 seconds",
-        2: "last minute has 59 seconds)",
-        3: "alarm condition (clock not synchronized)",
-    }
-    
-    # 3 bits
-    MODE_TABLE = {
-        0: "reserved",
-        1: "symmetric active",
-        2: "symmetric passive",
-        3: "client",
-        4: "server",
-        5: "broadcast",
-        6: "reserved for NTP control messages",
-        7: "reserved for private use",
-    }
-
-    STRATUM_TABLE = {
-        0: "unspecified",
-        1: "primary reference",
-    }
-
 def main():
     localIP     = "127.0.0.1"
-    localPort   = 5300
+    localPort   = 9001
     UDPServerSocket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
     UDPServerSocket.bind((localIP, localPort))
-    print("Link Available")
+    print("Puerto %d Disponible".format(localPort))
 
     Prog1 = Receptor(UDPServerSocket)
     Prog1.start()
